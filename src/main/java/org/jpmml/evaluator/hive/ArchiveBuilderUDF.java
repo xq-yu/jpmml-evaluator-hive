@@ -45,7 +45,7 @@ public class ArchiveBuilderUDF extends UDF {
 		} catch(Exception e){
 			this.log.error("Failed to build", e);
 
-			return null;
+			return e.toString();
 		}
 	}
 }

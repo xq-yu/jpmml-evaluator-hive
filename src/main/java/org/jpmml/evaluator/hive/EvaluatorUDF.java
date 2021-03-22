@@ -23,9 +23,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.io.IOException;
 
 import javax.xml.bind.JAXBException;
-import javax.xml.transform.Source;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -42,22 +42,15 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.dmg.pmml.DataType;
 import org.dmg.pmml.FieldName;
-import org.dmg.pmml.PMML;
 import org.jpmml.evaluator.EvaluationException;
 import org.jpmml.evaluator.Evaluator;
 import org.jpmml.evaluator.EvaluatorUtil;
 import org.jpmml.evaluator.FieldValue;
 import org.jpmml.evaluator.InputField;
-import org.jpmml.evaluator.InvalidFeatureException;
-import org.jpmml.evaluator.ModelEvaluatorFactory;
 import org.jpmml.evaluator.ResultField;
 import org.jpmml.evaluator.TargetField;
-import org.jpmml.evaluator.UnsupportedFeatureException;
-import org.jpmml.model.ImportFilter;
-import org.jpmml.model.JAXBUtil;
-import org.jpmml.model.visitors.LocatorTransformer;
-import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+import org.jpmml.evaluator.LoadingModelEvaluatorBuilder;
 
 abstract
 public class EvaluatorUDF extends GenericUDF {
@@ -77,8 +70,72 @@ public class EvaluatorUDF extends GenericUDF {
 	protected Log log = LogFactory.getLog(getClass());
 
 
+
+	//构造函数
 	public EvaluatorUDF(Resource resource){
 		setResource(resource);
+		loadEvaluator();
+	}
+
+	//创建Evaluator对象(jpmml-evalutor的核心)
+	private void loadEvaluator(){
+		try{
+			this.evaluator = createEvaluator();	
+		} catch(Exception e){
+			System.out.println(e.toString());
+		}
+	}
+
+	//获取evaluator
+	private Evaluator getEvaluator(){
+		return this.evaluator;
+	}	
+
+	//创建Evaluator
+	private Evaluator createEvaluator() throws IOException,SAXException, JAXBException {
+		Resource resource = getResource();
+		InputStream is = resource.getInputStream();
+		Evaluator evaluator;
+		evaluator = new LoadingModelEvaluatorBuilder().load(is).build();
+		return evaluator;
+	}
+
+	//hive udf调用方法
+	@Override
+	public Object evaluate(DeferredObject[] inputs) throws HiveException {
+		if(inputs == null || inputs.length != 1){
+			return null;
+		}
+
+		String message = null;
+
+		try {
+			message = "Failed to decode arguments";
+
+			Object[] input = (Object[])inputs[0].get();
+
+			Map<FieldName, FieldValue> arguments;
+
+			try {
+				arguments = decodeInput(input);
+			} catch(IllegalArgumentException iae){
+				this.log.warn(message, iae);
+
+				return null;
+			}
+
+			message = "Failed to evaluate";
+
+			Map<FieldName, ?> result = this.evaluator.evaluate(arguments);
+
+			message = "Failed to encode results";
+
+			return encodeOutput(result);
+		} catch(EvaluationException ee){
+			this.log.warn(message, ee);
+
+			return null;
+		}
 	}
 
 	@Override
@@ -94,12 +151,7 @@ public class EvaluatorUDF extends GenericUDF {
 	@Override
 	public ObjectInspector initialize(ObjectInspector[] inputInspectors) throws UDFArgumentException {
 		Evaluator evaluator;
-
-		try {
-			evaluator = ensureEvaluator();
-		} catch(Exception e){
-			throw new UDFArgumentException(e);
-		}
+		evaluator = getEvaluator();
 
 		checkArgsSize(inputInspectors, 1, 1);
 
@@ -161,55 +213,6 @@ public class EvaluatorUDF extends GenericUDF {
 		setOutputMappings(outputMappings);
 
 		return outputStructInspector;
-	}
-
-	@Override
-	public Object evaluate(DeferredObject[] inputs) throws HiveException {
-		Evaluator evaluator;
-
-		try {
-			evaluator = ensureEvaluator();
-		} catch(Exception e){
-			throw new HiveException(e);
-		}
-
-		if(inputs == null || inputs.length != 1){
-			return null;
-		}
-
-		String message = null;
-
-		try {
-			message = "Failed to decode arguments";
-
-			Object[] input = (Object[])inputs[0].get();
-
-			Map<FieldName, FieldValue> arguments;
-
-			try {
-				arguments = decodeInput(input);
-			} catch(IllegalArgumentException iae){
-				this.log.warn(message, iae);
-
-				return null;
-			}
-
-			message = "Failed to evaluate";
-
-			Map<FieldName, ?> result = evaluator.evaluate(arguments);
-
-			message = "Failed to encode results";
-
-			return encodeOutput(result);
-		} catch(EvaluationException ee){
-			this.log.warn(message, ee);
-
-			return null;
-		} catch(InvalidFeatureException | UnsupportedFeatureException fe){
-			this.log.error(message, fe);
-
-			throw new HiveException(fe);
-		}
 	}
 
 	private StructObjectInspector asStructOfPrimitivesInspector(ObjectInspector objectInspector){
@@ -288,23 +291,6 @@ public class EvaluatorUDF extends GenericUDF {
 		return output;
 	}
 
-	private Evaluator ensureEvaluator() throws Exception {
-
-		if(this.evaluator == null){
-			this.evaluator = createEvaluator();
-		}
-
-		return this.evaluator;
-	}
-
-	private Evaluator createEvaluator() throws Exception {
-		Resource resource = getResource();
-
-		try(InputStream is = resource.getInputStream()){
-			return createEvaluator(is);
-		}
-	}
-
 	public Resource getResource(){
 		return this.resource;
 	}
@@ -364,23 +350,6 @@ public class EvaluatorUDF extends GenericUDF {
 		}
 	}
 
-	static
-	private Evaluator createEvaluator(InputStream is) throws SAXException, JAXBException {
-		Source source = ImportFilter.apply(new InputSource(is));
 
-		PMML pmml = JAXBUtil.unmarshalPMML(source);
 
-		// If the SAX Locator information is available, then transform it to java.io.Serializable representation
-		LocatorTransformer locatorTransformer = new LocatorTransformer();
-		locatorTransformer.applyTo(pmml);
-
-		ModelEvaluatorFactory modelEvaluatorFactory = ModelEvaluatorFactory.newInstance();
-
-		Evaluator evaluator = modelEvaluatorFactory.newModelEvaluator(pmml);
-
-		// Perform self-testing
-		evaluator.verify();
-
-		return evaluator;
-	}
 }

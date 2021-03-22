@@ -5,7 +5,7 @@ PMML evaluator library for the Apache Hive data warehouse software (http://hive.
 
 # Features #
 
-* Full support for PMML specification versions 3.0 through 4.3. The evaluation is handled by the [JPMML-Evaluator](https://github.com/jpmml/jpmml-evaluator) library.
+* Full support for PMML specification versions 3.0 through 4.4. The evaluation is handled by the [JPMML-Evaluator-1.5.14](https://github.com/jpmml/jpmml-evaluator) library.
 
 # Prerequisites #
 
